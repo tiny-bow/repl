@@ -1,20 +1,14 @@
 .{
-    .name = .linenoize,
-    .fingerprint = 0xfa03aea2f0cab127,
-    .version = "0.1.1",
+    .name = .repl,
+    .version = "0.0.0",
+    .fingerprint = 0xc555ea457d1ae57f,
     .dependencies = .{
-        .wcwidth = .{
-            .url = "git+https://github.com/joachimschmidt557/zig-wcwidth?ref=v0.1.0#4f5c8efa838da57c9e1b14506138936964835999",
-            .hash = "wcwidth-0.1.0-A4Aa6obmAAC40epfTYwhsdITDO3M6dHEWf6C0jeGMWrV",
-        },
+        .platform = .{ .path = "../ribbon-platform" },
     },
     .paths = .{
-        "LICENSE",
-        "README.md",
         "build.zig",
         "build.zig.zon",
-        "examples/",
-        "includes/",
-        "src/",
+        "repl.zig",
+        "LICENSE",
     },
 }
