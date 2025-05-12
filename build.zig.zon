@@ -3,7 +3,10 @@
     .version = "0.0.0",
     .fingerprint = 0xc555ea457d1ae57f,
     .dependencies = .{
-        .platform = .{ .path = "../ribbon-platform" },
+        .platform = .{
+            .path = "../ribbon-platform",
+            .optional = true,
+        },
     },
     .paths = .{
         "build.zig",

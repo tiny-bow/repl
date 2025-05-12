@@ -223,13 +223,13 @@ pub fn Builder(comptime Ctx: type) type {
                     const c2 = c + len;
 
                     switch (utils.compare(c2, self.inputLen)) {
-                        .Less => {
+                        .lt => {
                             self.cursor = c2;
                         },
-                        .Equal => {
+                        .eq => {
                             self.cursor = null;
                         },
-                        .Greater => break :c,
+                        .gt => break :c,
                     }
 
                     return self.inputBuf[c..c2];
@@ -246,15 +246,15 @@ pub fn Builder(comptime Ctx: type) type {
                 if (self.cursor) |c| {
                     const c2 = c + n;
                     switch (utils.compare(c2, self.inputLen)) {
-                        .Less => {
+                        .lt => {
                             self.cursor = c2;
                             return;
                         },
-                        .Equal => {
+                        .eq => {
                             self.cursor = null;
                             return;
                         },
-                        .Greater => {},
+                        .gt => {},
                     }
                 }
 
