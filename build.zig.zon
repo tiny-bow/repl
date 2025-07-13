@@ -1,11 +1,11 @@
 .{
     .name = .repl,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0xc555ea457d1ae57f,
     .dependencies = .{
         .rg = .{
-            .path = "../rg",
-            .optional = true,
+            .url = "git+https://github.com/tiny-bow/rg#7d9574c4de3b1dac42c5c0e411b094732851929e",
+            .hash = "rg-0.1.0-wrB3Tdjy7ALv1mWb6bdWcC8hSLm4UNWOjR_Z8Z3fsJt0",
         },
     },
     .paths = .{
