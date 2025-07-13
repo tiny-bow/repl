@@ -4,12 +4,17 @@ const ArrayList = std.ArrayList;
 const File = std.fs.File;
 
 
-const utils = @import("utils");
+const rg = @import("rg");
 
 const log = std.log.scoped(.repl);
 
 const USE_ANSI_STYLES = true;
 const REPL_DISABLE_RAW_MODE = false;
+
+
+const IOError = std.fs.File.WriteError || std.fs.File.ReadError || std.fs.File.OpenError || error{
+    StreamTooLong,
+};
 
 pub fn Builder(comptime Ctx: type) type {
     return struct {
@@ -39,17 +44,9 @@ pub fn Builder(comptime Ctx: type) type {
             NothingRead,
         };
 
-        pub fn isTerminalError(err: anyerror) bool {
-            return utils.types.isInErrorSet(TerminalError, err);
-        }
+        pub const OperationalError = std.mem.Allocator.Error || rg.Error;
 
-        pub fn asTerminalError(err: anyerror) ?TerminalError {
-            return utils.types.narrowErrorSet(TerminalError, err);
-        }
-
-        pub const OperationalError = std.mem.Allocator.Error || utils.text.Error;
-
-        pub const Error = OperationalError || TerminalError || utils.IOError || Signal;
+        pub const Error = OperationalError || TerminalError || IOError || Signal;
 
         pub const CompletionsCallback = *const fn (*Ctx, Allocator, usize, []const u8) Ctx.Error![]const []const u8;
         pub const HintsCallback = *const fn (*Ctx, Allocator, usize, []const u8) Ctx.Error!?[]const u8;
@@ -184,9 +181,9 @@ pub fn Builder(comptime Ctx: type) type {
 
                 var i: usize = 0;
                 while (i < self.inputLen) {
-                    const dec = try utils.text.decode1(self.inputBuf[i..]);
+                    const dec = try rg.decode1(self.inputBuf[i..]);
                     var escBuf = [1]u8{0} ** 4;
-                    const esc = try utils.text.escape(dec.ch, .None, &escBuf);
+                    const esc = try rg.escape(dec.ch, .None, &escBuf);
                     log.debug("{s}", .{esc});
                     i += dec.len;
                 }
@@ -222,20 +219,18 @@ pub fn Builder(comptime Ctx: type) type {
                 if (self.cursor) |c| c: {
                     const c2 = c + len;
 
-                    switch (utils.compare(c2, self.inputLen)) {
-                        .lt => {
-                            self.cursor = c2;
-                        },
-                        .eq => {
-                            self.cursor = null;
-                        },
-                        .gt => break :c,
+                    if (c2 == self.inputLen) {
+                        self.cursor = null;
+                    } else if (c2 < self.inputLen) {
+                        self.cursor = c2;
+                    } else {
+                        break :c;
                     }
 
                     return self.inputBuf[c..c2];
                 }
 
-                return utils.text.Error.BadEncoding;
+                return rg.Error.BadEncoding;
             }
 
             fn remainingLen(self: *Self) usize {
@@ -245,20 +240,17 @@ pub fn Builder(comptime Ctx: type) type {
             fn advanceCursor(self: *Self, n: usize) !void {
                 if (self.cursor) |c| {
                     const c2 = c + n;
-                    switch (utils.compare(c2, self.inputLen)) {
-                        .lt => {
-                            self.cursor = c2;
-                            return;
-                        },
-                        .eq => {
-                            self.cursor = null;
-                            return;
-                        },
-                        .gt => {},
+
+                    if (c2 < self.inputLen) {
+                        self.cursor = c2;
+                        return;
+                    } else if (c2 == self.inputLen) {
+                        self.cursor = null;
+                        return;
                     }
                 }
 
-                return utils.text.Error.BadEncoding;
+                return rg.Error.BadEncoding;
             }
 
             fn overflow(self: *Self) !void {
@@ -383,7 +375,7 @@ pub fn Builder(comptime Ctx: type) type {
                     },
                     key_backspace, key_ctrl_h => try state.backspace(),
                     else => {
-                        const utf8Len = try utils.text.sequenceLengthByte(c);
+                        const utf8Len = try rg.sequenceLengthByte(c);
 
                         var utf8 = [1]u8{c} ++ ([1]u8{0} ** 3);
 
@@ -401,7 +393,7 @@ pub fn Builder(comptime Ctx: type) type {
                             try rd.readNextSegment(false);
 
                             if (rd.inputLen < rem) {
-                                return utils.text.Error.BadEncoding;
+                                return rg.Error.BadEncoding;
                             }
 
                             @memcpy(utf8[offset .. offset + rem], rd.inputBuf[0..rem]);
@@ -411,7 +403,7 @@ pub fn Builder(comptime Ctx: type) type {
 
                         const slice = utf8[0..utf8Len];
 
-                        if (!utils.text.isValidStr(slice)) return utils.text.Error.BadEncoding;
+                        if (!rg.isValidStr(slice)) return rg.Error.BadEncoding;
 
                         try state.insert(slice);
                     },
@@ -552,13 +544,13 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         fn getCursorPosition(self: *REPL) !usize {
-            const answer = try utils.ansi.Cursor.IO.RequestPosition(self.output.writer(), self.input.reader());
+            const answer = try rg.ansi.Cursor.IO.RequestPosition(self.output.writer(), self.input.reader());
 
             return answer.x;
         }
 
         fn getColumnsFallback(self: *REPL) !usize {
-            return try utils.ansi.Cursor.IO.GetColumns(self.output.writer(), self.input.reader());
+            return try rg.ansi.Cursor.IO.GetColumns(self.output.writer(), self.input.reader());
         }
 
         fn getColumns(self: *REPL) !usize {
@@ -581,12 +573,12 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         pub fn clearScreen(self: *REPL) !void {
-            try self.output.writeAll(utils.ansi.Cursor.MoveHome ++ utils.ansi.Erase.EntireScreen);
+            try self.output.writeAll(rg.ansi.Cursor.MoveHome ++ rg.ansi.Erase.EntireScreen);
         }
 
         pub fn beep(_: *REPL) !void {
             const stderr = std.io.getStdErr().writer();
-            try stderr.writeByte(utils.ansi.Scl.Bell);
+            try stderr.writeByte(rg.ansi.Scl.Bell);
         }
 
         fn width(s: []const u8) usize {
@@ -597,14 +589,14 @@ pub fn Builder(comptime Ctx: type) type {
             var iter = view.iterator();
             while (iter.nextCodepoint()) |codepoint| {
                 if (escape_seq) {
-                    if (codepoint == utils.ansi.Scl.EscEnd) {
+                    if (codepoint == rg.ansi.Scl.EscEnd) {
                         escape_seq = false;
                     }
                 } else {
-                    if (codepoint == utils.ansi.Scl.Esc) {
+                    if (codepoint == rg.ansi.Scl.Esc) {
                         escape_seq = true;
                     } else {
-                        const wcw = utils.text.wcwidth(codepoint);
+                        const wcw = rg.wcwidth(codepoint);
                         if (wcw < 0) return 0;
                         result += @intCast(wcw);
                     }
@@ -847,7 +839,7 @@ pub fn Builder(comptime Ctx: type) type {
             };
 
             fn refresh(self: *Self, mode: DisplayMode) !void {
-                const Style = if (USE_ANSI_STYLES) utils.ansi.Style else utils.ansi.NoStyle;
+                const Style = if (USE_ANSI_STYLES) rg.ansi.Style else rg.ansi.NoStyle;
                 var buf = bufferedWriter(self.repl.output.writer());
                 var writer = buf.writer();
 
@@ -872,19 +864,19 @@ pub fn Builder(comptime Ctx: type) type {
 
                 // Go to the last row
                 if (old_max_rows > old_rpos) {
-                    try utils.ansi.Cursor.W.MoveDown(writer, old_max_rows - old_rpos);
+                    try rg.ansi.Cursor.W.MoveDown(writer, old_max_rows - old_rpos);
                 }
 
                 // Clear every row from bottom to top
                 if (old_max_rows > 0) {
                     var j: usize = 0;
                     while (j < old_max_rows - 1) : (j += 1) {
-                        try writer.writeAll(utils.ansi.Seq.CarriageReturn ++ utils.ansi.Erase.CursorToEndOfLine ++ utils.ansi.Cursor.Ct.MoveUp(1));
+                        try writer.writeAll(rg.ansi.Seq.CarriageReturn ++ rg.ansi.Erase.CursorToEndOfLine ++ rg.ansi.Cursor.Ct.MoveUp(1));
                     }
                 }
 
                 // Clear the top line
-                try writer.writeAll(utils.ansi.Seq.CarriageReturn ++ utils.ansi.Erase.CursorToEndOfLine);
+                try writer.writeAll(rg.ansi.Seq.CarriageReturn ++ rg.ansi.Erase.CursorToEndOfLine);
 
                 // Write prompt
                 try writer.writeAll(self.prompt);
@@ -933,15 +925,15 @@ pub fn Builder(comptime Ctx: type) type {
 
                 // First, y position (move up if necessary)
                 if (rows > rpos) {
-                    try utils.ansi.Cursor.W.MoveUp(writer, rows - rpos);
+                    try rg.ansi.Cursor.W.MoveUp(writer, rows - rpos);
                 }
 
-                try writer.writeByte(utils.ansi.Scl.CarriageReturn);
+                try writer.writeByte(rg.ansi.Scl.CarriageReturn);
 
                 // Then, x position (move right if necessary)
                 const col = (prompt_width + pos) % self.cols;
                 if (col > 0) {
-                    try utils.ansi.Cursor.W.MoveRight(writer, col);
+                    try rg.ansi.Cursor.W.MoveRight(writer, col);
                 }
 
                 self.old_pos = pos;

@@ -10,35 +10,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    if (b.option(bool, "builtin_platform", "use the builtin platform") orelse true) {
-        const platform_dep = b.dependency("platform", .{
-            .target = target,
-            .optimize = optimize,
-            .name = @as([]const u8, "repl"),
-            .version = @as([]const u8, "0.0.0"),
-        });
-
-        repl_mod.addImport("utils", platform_dep.module("utils"));
-
-        const repl_test = b.addTest(.{
-            .root_module = repl_mod,
-        });
-
-        const check = b.step("check", "Semantic analysis");
-        check.dependOn(&repl_test.step);
-
-        b.default_step.dependOn(check);
-    }
-}
-
-pub fn use_platform(b: *std.Build, utils: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    const mod = b.createModule(.{
-        .root_source_file = b.path("repl.zig"),
+    const rg_dep = b.dependency("rg", .{
         .target = target,
         .optimize = optimize,
     });
 
-    mod.addImport("utils", utils);
+    repl_mod.addImport("rg", rg_dep.module("rg"));
 
-    return mod;
+    const repl_test = b.addTest(.{
+        .root_module = repl_mod,
+    });
+
+    const check = b.step("check", "Semantic analysis");
+    check.dependOn(&repl_test.step);
+
+    b.default_step.dependOn(check);
 }

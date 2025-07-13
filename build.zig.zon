@@ -3,8 +3,8 @@
     .version = "0.0.0",
     .fingerprint = 0xc555ea457d1ae57f,
     .dependencies = .{
-        .platform = .{
-            .path = "../ribbon-platform",
+        .rg = .{
+            .path = "../rg",
             .optional = true,
         },
     },
