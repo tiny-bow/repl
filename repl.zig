@@ -3,14 +3,12 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const File = std.fs.File;
 
-
 const rg = @import("rg");
 
 const log = std.log.scoped(.repl);
 
 const USE_ANSI_STYLES = true;
 const REPL_DISABLE_RAW_MODE = false;
-
 
 const IOError = std.fs.File.WriteError || std.fs.File.ReadError || std.fs.File.OpenError || error{
     StreamTooLong,
@@ -77,9 +75,9 @@ pub fn Builder(comptime Ctx: type) type {
                 .ctx = ctx,
                 .allocator = allocator,
                 .history = History.empty(allocator),
-                .input = std.io.getStdIn(),
-                .output = std.io.getStdOut(),
-                .inputOverflow = std.ArrayList(u8).init(allocator),
+                .input = std.fs.File.stdin(),
+                .output = std.fs.File.stdout(),
+                .inputOverflow = std.ArrayList(u8).empty,
             };
             self.examineIo();
             return self;
@@ -88,7 +86,7 @@ pub fn Builder(comptime Ctx: type) type {
         /// Free all resources occupied by this struct
         pub fn deinit(self: *REPL) void {
             self.history.deinit();
-            self.inputOverflow.deinit();
+            self.inputOverflow.deinit(self.allocator);
         }
 
         /// Re-examine (currently) stdin and environment variables to
@@ -125,7 +123,7 @@ pub fn Builder(comptime Ctx: type) type {
 
                 while (true) {
                     const base = inputOverflow.items.len;
-                    try inputOverflow.resize(base + readSize);
+                    try inputOverflow.resize(self.state.allocator, base + readSize);
 
                     const buf = inputOverflow.items[base..];
                     const bytesRead = try self.state.repl.input.read(buf);
@@ -256,7 +254,7 @@ pub fn Builder(comptime Ctx: type) type {
             fn overflow(self: *Self) !void {
                 const rem = self.remainingInput();
 
-                try self.state.repl.inputOverflow.insertSlice(0, rem);
+                try self.state.repl.inputOverflow.insertSlice(self.state.allocator, 0, rem);
                 self.inputLen = 0;
                 self.cursor = null;
 
@@ -424,12 +422,16 @@ pub fn Builder(comptime Ctx: type) type {
 
         /// Read a line with no special features (no hints, no completions, no history)
         fn noTTY(self: *REPL) !?[]const u8 {
-            var reader = self.input.reader();
-            const max_read = std.math.maxInt(usize);
-            return reader.readUntilDelimiterAlloc(self.allocator, '\n', max_read) catch |e| switch (e) {
+            var reader = self.input.reader(&.{});
+            var alloc = std.io.Writer.Allocating.init(self.allocator);
+            defer alloc.deinit();
+
+            _ = reader.interface.streamDelimiter(&alloc.writer, '\n') catch |e| switch (e) {
                 error.EndOfStream => return null,
                 else => return e,
             };
+
+            return try alloc.toOwnedSlice();
         }
 
         const builtin = @import("builtin");
@@ -441,7 +443,8 @@ pub fn Builder(comptime Ctx: type) type {
 
         pub fn isUnsupportedTerm(self: *REPL) bool {
             const env_var = std.process.getEnvVarOwned(self.allocator, "TERM") catch "unknown";
-            const writer = self.output.writer();
+            var out_writer = self.output.writer(&.{});
+            const writer = &out_writer.interface;
             if (std.mem.eql(u8, env_var, "unknown")) {
                 writer.print("Detected terminal kind: `unknown`\n", .{}) catch unreachable;
                 if (is_windows) {
@@ -466,20 +469,20 @@ pub fn Builder(comptime Ctx: type) type {
             } else false;
         }
 
+        const wi = std.os.windows;
         const w = struct {
-            pub usingnamespace std.os.windows;
             pub const ENABLE_VIRTUAL_TERMINAL_INPUT = @as(c_int, 0x200);
             pub const CP_UTF8 = @as(c_int, 65001);
             pub const INPUT_RECORD = extern struct {
-                EventType: w.WORD,
+                EventType: wi.WORD,
                 _ignored: [16]u8,
             };
         };
 
+        const k32i = std.os.windows.kernel32;
         const k32 = struct {
-            pub usingnamespace std.os.windows.kernel32;
-            pub extern "kernel32" fn SetConsoleCP(wCodePageID: w.UINT) callconv(w.WINAPI) w.BOOL;
-            pub extern "kernel32" fn PeekConsoleInputW(hConsoleInput: w.HANDLE, lpBuffer: [*]w.INPUT_RECORD, nLength: w.DWORD, lpNumberOfEventsRead: ?*w.DWORD) callconv(w.WINAPI) w.BOOL;
+            pub extern "kernel32" fn SetConsoleCP(wCodePageID: wi.UINT) callconv(w.WINAPI) wi.BOOL;
+            pub extern "kernel32" fn PeekConsoleInputW(hConsoleInput: wi.HANDLE, lpBuffer: [*]wi.INPUT_RECORD, nLength: wi.DWORD, lpNumberOfEventsRead: ?*wi.DWORD) callconv(wi.WINAPI) wi.BOOL;
         };
 
         fn enableRawMode(self: *REPL) !termios {
@@ -544,13 +547,19 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         fn getCursorPosition(self: *REPL) !usize {
-            const answer = try rg.ansi.Cursor.IO.RequestPosition(self.output.writer(), self.input.reader());
+            var file_writer = self.output.writer(&.{});
+            var file_reader = self.input.reader(&.{});
+
+            const answer = try rg.ansi.Cursor.IO.RequestPosition(&file_writer.interface, &file_reader.interface);
 
             return answer.x;
         }
 
         fn getColumnsFallback(self: *REPL) !usize {
-            return try rg.ansi.Cursor.IO.GetColumns(self.output.writer(), self.input.reader());
+            var file_writer = self.output.writer(&.{});
+            var file_reader = self.input.reader(&.{});
+
+            return try rg.ansi.Cursor.IO.GetColumns(&file_writer.interface, &file_reader.interface);
         }
 
         fn getColumns(self: *REPL) !usize {
@@ -577,8 +586,9 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         pub fn beep(_: *REPL) !void {
-            const stderr = std.io.getStdErr().writer();
-            try stderr.writeByte(rg.ansi.Scl.Bell);
+            const stderr = std.fs.File.stderr();
+            var writer = stderr.writer(&.{});
+            try writer.interface.writeByte(rg.ansi.Scl.Bell);
         }
 
         fn width(s: []const u8) usize {
@@ -607,7 +617,6 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         const ArrayListUnmanaged = std.ArrayListUnmanaged;
-        const bufferedWriter = std.io.bufferedWriter;
         const math = std.math;
 
         const Bias = enum {
@@ -840,8 +849,9 @@ pub fn Builder(comptime Ctx: type) type {
 
             fn refresh(self: *Self, mode: DisplayMode) !void {
                 const Style = if (USE_ANSI_STYLES) rg.ansi.Style else rg.ansi.NoStyle;
-                var buf = bufferedWriter(self.repl.output.writer());
-                var writer = buf.writer();
+                var buf: [4096]u8 = undefined;
+                var file_writer = self.repl.output.writer(&buf);
+                const writer = &file_writer.interface;
 
                 const completion = self.activeCompletion;
                 const hint = if (completion == null) try self.getHint() else null;
@@ -938,7 +948,7 @@ pub fn Builder(comptime Ctx: type) type {
 
                 self.old_pos = pos;
 
-                try buf.flush();
+                try writer.flush();
             }
 
             fn insert(self: *Self, c: []const u8) !void {
@@ -1279,7 +1289,9 @@ pub fn Builder(comptime Ctx: type) type {
 
 test {
     log.debug("history test start\n", .{});
-    var hist = Builder(struct {const Error = error {};}).History.empty(std.testing.allocator);
+    var hist = Builder(struct {
+        const Error = error{};
+    }).History.empty(std.testing.allocator);
     defer hist.deinit();
 
     try hist.add("Hello");
