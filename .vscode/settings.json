@@ -5,5 +5,6 @@
         "**/*.rpa": true,
         "**/*.rpymc": true,
         "**/cache/": true
-    }
+    },
+    "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix"
 }

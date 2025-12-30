@@ -439,7 +439,7 @@ pub fn Builder(comptime Ctx: type) type {
         const unsupported_term = [_][]const u8{ "dumb", "cons25", "emacs" };
 
         const is_windows = builtin.os.tag == .windows;
-        const termios = if (!is_windows) std.posix.termios else struct { inMode: w.DWORD, outMode: w.DWORD };
+        const termios = if (!is_windows) std.posix.termios else struct { inMode: wi.DWORD, outMode: wi.DWORD };
 
         pub fn isUnsupportedTerm(self: *REPL) bool {
             const env_var = std.process.getEnvVarOwned(self.allocator, "TERM") catch "unknown";
@@ -481,8 +481,8 @@ pub fn Builder(comptime Ctx: type) type {
 
         const k32i = std.os.windows.kernel32;
         const k32 = struct {
-            pub extern "kernel32" fn SetConsoleCP(wCodePageID: wi.UINT) callconv(w.WINAPI) wi.BOOL;
-            pub extern "kernel32" fn PeekConsoleInputW(hConsoleInput: wi.HANDLE, lpBuffer: [*]wi.INPUT_RECORD, nLength: wi.DWORD, lpNumberOfEventsRead: ?*wi.DWORD) callconv(wi.WINAPI) wi.BOOL;
+            pub extern "kernel32" fn SetConsoleCP(wCodePageID: wi.UINT) callconv(.winapi) wi.BOOL;
+            pub extern "kernel32" fn PeekConsoleInputW(hConsoleInput: wi.HANDLE, lpBuffer: [*]w.INPUT_RECORD, nLength: wi.DWORD, lpNumberOfEventsRead: ?*wi.DWORD) callconv(.winapi) wi.BOOL;
         };
 
         fn enableRawMode(self: *REPL) !termios {
@@ -492,15 +492,14 @@ pub fn Builder(comptime Ctx: type) type {
                     .outMode = 0,
                 };
                 var irec: [1]w.INPUT_RECORD = undefined;
-                var n: w.DWORD = 0;
+                var n: wi.DWORD = 0;
                 if (k32.PeekConsoleInputW(self.input.handle, &irec, 1, &n) == 0 or
-                    k32.GetConsoleMode(self.input.handle, &result.inMode) == 0 or
-                    k32.GetConsoleMode(self.output.handle, &result.outMode) == 0)
+                    k32i.GetConsoleMode(self.input.handle, &result.inMode) == 0 or
+                    k32i.GetConsoleMode(self.output.handle, &result.outMode) == 0)
                     return error.InitFailed;
-                _ = k32.SetConsoleMode(self.input.handle, w.ENABLE_VIRTUAL_TERMINAL_INPUT);
-                _ = k32.SetConsoleMode(self.output.handle, result.outMode | w.ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+                _ = k32i.SetConsoleMode(self.output.handle, result.outMode | wi.ENABLE_VIRTUAL_TERMINAL_PROCESSING);
                 _ = k32.SetConsoleCP(w.CP_UTF8);
-                _ = k32.SetConsoleOutputCP(w.CP_UTF8);
+                _ = k32i.SetConsoleOutputCP(w.CP_UTF8);
                 return result;
             } else {
                 const orig = try std.posix.tcgetattr(self.input.handle);
@@ -539,8 +538,8 @@ pub fn Builder(comptime Ctx: type) type {
 
         fn disableRawMode(self: *REPL, orig: termios) void {
             if (is_windows) {
-                _ = k32.SetConsoleMode(self.input.handle, orig.inMode);
-                _ = k32.SetConsoleMode(self.output.handle, orig.outMode);
+                _ = k32i.SetConsoleMode(self.input.handle, orig.inMode);
+                _ = k32i.SetConsoleMode(self.output.handle, orig.outMode);
             } else {
                 std.posix.tcsetattr(self.input.handle, std.posix.TCSA.FLUSH, orig) catch {};
             }
@@ -573,8 +572,8 @@ pub fn Builder(comptime Ctx: type) type {
                     }
                 },
                 .windows => {
-                    var csbi: w.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-                    _ = k32.GetConsoleScreenBufferInfo(self.output.handle, &csbi);
+                    var csbi: wi.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+                    _ = k32i.GetConsoleScreenBufferInfo(self.output.handle, &csbi);
                     return @intCast(csbi.dwSize.X);
                 },
                 else => return try self.getColumnsFallback(),
