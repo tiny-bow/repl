@@ -5,7 +5,8 @@
     .fingerprint = 0xc555ea457d1ae57f,
     .dependencies = .{
         .rg = .{
-            .path = "../rg",
+            .url = "git+https://github.com/tiny-bow/rg#7a2ed1ec181222b8c29c5b3e1aeea46488885cd9",
+            .hash = "rg-0.16.0-dev.2736+3b515fbed-ladK18n0tALxiXONBjxgc91XPBMI4KqBn9BHkyurXaZH",
         },
     },
     .paths = .{
