@@ -21,6 +21,9 @@ pub fn build(b: *std.Build) void {
         .root_module = repl_mod,
     });
 
+    const tests = b.step("test", "Run tests");
+    tests.dependOn(&b.addRunArtifact(repl_test).step);
+
     const check = b.step("check", "Semantic analysis");
     check.dependOn(&repl_test.step);
 

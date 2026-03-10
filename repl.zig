@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const File = std.fs.File;
+const File = std.Io.File;
 
 const rg = @import("rg");
 
@@ -10,12 +10,14 @@ const log = std.log.scoped(.repl);
 const USE_ANSI_STYLES = true;
 const REPL_DISABLE_RAW_MODE = false;
 
-const IOError = std.fs.File.WriteError || std.fs.File.ReadError || std.fs.File.OpenError || error{
+const IOError = error{
     StreamTooLong,
 };
 
 pub fn Builder(comptime Ctx: type) type {
     return struct {
+        io: std.Io,
+        env: std.process.Environ,
         ctx: *Ctx,
         allocator: Allocator,
         history: History,
@@ -24,8 +26,8 @@ pub fn Builder(comptime Ctx: type) type {
         term_supported: bool = false,
         completions_callback: ?CompletionsCallback = null,
         hints_callback: ?HintsCallback = null,
-        input: std.fs.File,
-        output: std.fs.File,
+        input: std.Io.File,
+        output: std.Io.File,
         inputOverflow: std.ArrayList(u8),
 
         const REPL = @This();
@@ -70,16 +72,18 @@ pub fn Builder(comptime Ctx: type) type {
         const key_backspace = 127;
 
         /// Initialize a REPL struct
-        pub fn init(ctx: *Ctx, allocator: Allocator) REPL {
+        pub fn init(env: std.process.Environ, io: std.Io, ctx: *Ctx, allocator: Allocator) !REPL {
             var self = REPL{
+                .io = io,
+                .env = env,
                 .ctx = ctx,
                 .allocator = allocator,
                 .history = History.empty(allocator),
-                .input = std.fs.File.stdin(),
-                .output = std.fs.File.stdout(),
+                .input = std.Io.File.stdin(),
+                .output = std.Io.File.stdout(),
                 .inputOverflow = std.ArrayList(u8).empty,
             };
-            self.examineIo();
+            try self.examineIo();
             return self;
         }
 
@@ -92,15 +96,16 @@ pub fn Builder(comptime Ctx: type) type {
         /// Re-examine (currently) stdin and environment variables to
         /// check if line editing and prompt printing should be
         /// enabled or not.
-        pub fn examineIo(self: *REPL) void {
-            self.is_tty = self.input.isTty();
+        pub fn examineIo(self: *REPL) !void {
+            self.is_tty = try self.input.isTty(self.io);
             self.term_supported = if (REPL_DISABLE_RAW_MODE) false else !self.isUnsupportedTerm();
         }
 
         /// Reads a line from the terminal. Caller owns returned memory
         pub fn getInput(self: *REPL, prompt: []const u8) (Ctx.Error || Error)!?[]const u8 {
             if (self.is_tty and !self.term_supported) {
-                try self.output.writeAll(prompt);
+                var writer = self.output.writer(self.io, &.{});
+                try writer.interface.writeAll(prompt);
             }
 
             return if (self.is_tty and self.term_supported)
@@ -126,7 +131,8 @@ pub fn Builder(comptime Ctx: type) type {
                     try inputOverflow.resize(self.state.allocator, base + readSize);
 
                     const buf = inputOverflow.items[base..];
-                    const bytesRead = try self.state.repl.input.read(buf);
+                    var reader = self.state.repl.input.reader(self.state.repl.io, &.{});
+                    const bytesRead = try reader.interface.readSliceShort(buf);
 
                     if (bytesRead < readSize) {
                         inputOverflow.items.len = base + bytesRead;
@@ -412,18 +418,21 @@ pub fn Builder(comptime Ctx: type) type {
         /// Read a line with custom line editing mechanics. This includes hints,
         /// completions and history
         fn rawTTY(self: *REPL, prompt: []const u8) !?[]const u8 {
-            defer self.output.writeAll("\n") catch {};
-
             const orig = try self.enableRawMode();
             defer self.disableRawMode(orig);
 
-            return try editLine(self, prompt);
+            const out = try editLine(self, prompt);
+
+            var writer = self.output.writer(self.io, &.{});
+            try writer.interface.writeAll("\n");
+
+            return out;
         }
 
         /// Read a line with no special features (no hints, no completions, no history)
         fn noTTY(self: *REPL) !?[]const u8 {
-            var reader = self.input.reader(&.{});
-            var alloc = std.io.Writer.Allocating.init(self.allocator);
+            var reader = self.input.reader(self.io, &.{});
+            var alloc = std.Io.Writer.Allocating.init(self.allocator);
             defer alloc.deinit();
 
             _ = reader.interface.streamDelimiter(&alloc.writer, '\n') catch |e| switch (e) {
@@ -442,8 +451,8 @@ pub fn Builder(comptime Ctx: type) type {
         const termios = if (!is_windows) std.posix.termios else struct { inMode: wi.DWORD, outMode: wi.DWORD };
 
         pub fn isUnsupportedTerm(self: *REPL) bool {
-            const env_var = std.process.getEnvVarOwned(self.allocator, "TERM") catch "unknown";
-            var out_writer = self.output.writer(&.{});
+            const env_var = self.env.getAlloc(self.allocator, "TERM") catch "unknown";
+            var out_writer = self.output.writer(self.io, &.{});
             const writer = &out_writer.interface;
             if (std.mem.eql(u8, env_var, "unknown")) {
                 writer.print("Detected terminal kind: `unknown`\n", .{}) catch unreachable;
@@ -546,8 +555,8 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         fn getCursorPosition(self: *REPL) !usize {
-            var file_writer = self.output.writer(&.{});
-            var file_reader = self.input.reader(&.{});
+            var file_writer = self.output.writer(self.io, &.{});
+            var file_reader = self.input.reader(self.io, &.{});
 
             const answer = try rg.ansi.Cursor.IO.RequestPosition(&file_writer.interface, &file_reader.interface);
 
@@ -555,8 +564,8 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         fn getColumnsFallback(self: *REPL) !usize {
-            var file_writer = self.output.writer(&.{});
-            var file_reader = self.input.reader(&.{});
+            var file_writer = self.output.writer(self.io, &.{});
+            var file_reader = self.input.reader(self.io, &.{});
 
             return try rg.ansi.Cursor.IO.GetColumns(&file_writer.interface, &file_reader.interface);
         }
@@ -581,12 +590,13 @@ pub fn Builder(comptime Ctx: type) type {
         }
 
         pub fn clearScreen(self: *REPL) !void {
-            try self.output.writeAll(rg.ansi.Cursor.MoveHome ++ rg.ansi.Erase.EntireScreen);
+            var writer = self.output.writer(self.io, &.{});
+            try writer.interface.writeAll(rg.ansi.Cursor.MoveHome ++ rg.ansi.Erase.EntireScreen);
         }
 
-        pub fn beep(_: *REPL) !void {
-            const stderr = std.fs.File.stderr();
-            var writer = stderr.writer(&.{});
+        pub fn beep(self: *REPL) !void {
+            const stderr = std.Io.File.stderr();
+            var writer = stderr.writer(self.io, &.{});
             try writer.interface.writeByte(rg.ansi.Scl.Bell);
         }
 
@@ -849,7 +859,7 @@ pub fn Builder(comptime Ctx: type) type {
             fn refresh(self: *Self, mode: DisplayMode) !void {
                 const Style = if (USE_ANSI_STYLES) rg.ansi.Style else rg.ansi.NoStyle;
                 var buf: [4096]u8 = undefined;
-                var file_writer = self.repl.output.writer(&buf);
+                var file_writer = self.repl.output.writer(self.repl.io, &buf);
                 const writer = &file_writer.interface;
 
                 const completion = self.activeCompletion;
